@@ -1,0 +1,39 @@
+# Frontend — Multi-stage Containerfile
+# Stage 1: node builder (npm ci + build)
+# Stage 2: nginx (static serving only)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Stage 1: build
+# ──────────────────────────────────────────────────────────────────────────────
+FROM node:20-slim AS builder
+
+WORKDIR /build
+
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+COPY . .
+RUN npm run build
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Stage 2: nginx runtime
+# ──────────────────────────────────────────────────────────────────────────────
+FROM nginx:1.27-alpine AS runtime
+
+# Security: remove default config
+RUN rm /etc/nginx/conf.d/default.conf
+
+COPY --from=builder /build/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/nginx.conf
+
+# Non-root: nginx listens on 8080
+RUN sed -i 's/listen\s*80/listen 8080/g' /etc/nginx/nginx.conf \
+    && chown -R nginx:nginx /var/cache/nginx /var/log/nginx \
+    && chmod -R 755 /var/cache/nginx
+
+USER nginx
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s \
+    CMD wget -qO- http://localhost:8080/health || exit 1

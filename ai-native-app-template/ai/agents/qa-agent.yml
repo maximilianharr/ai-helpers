@@ -1,0 +1,57 @@
+name: qa-agent
+description: Generates edge-case tests, runs evals, enforces coverage thresholds.
+version: "1.0"
+
+model:
+  primary: gpt-5.3-codex
+  fallback: claude-sonnet-4.6
+  temperature: 0.3
+
+triggers:
+  - type: github_event
+    event: pull_request
+    actions: [opened, synchronize]
+
+inputs:
+  - source: pr_diff
+    command: "git --no-pager diff origin/main...HEAD"
+  - source: spec_file
+    # extracted from PR body "Implements: specs/features/<slug>.md"
+    via_mcp: filesystem
+    paths: ["specs/features/"]
+  - source: existing_tests
+    via_mcp: filesystem
+    paths: ["backend/tests/", "tests/ai-generated/"]
+
+outputs:
+  - type: filesystem_write
+    path_pattern: "tests/ai-generated/{spec_slug}/test_{spec_slug}.py"
+    via_mcp: filesystem
+  - type: github_pr_review
+    summary: true       # one top-level summary comment
+    inline: false       # no inline comments from qa-agent (those are review-agent's job)
+  - type: github_label
+    label: tests-ok
+    condition: "all_acs_covered AND coverage >= 80"
+  - type: github_label
+    label: needs-more-tests
+    condition: "coverage < 80 OR uncovered_acs > 0"
+
+prompt_template: ai/prompts/test-gen/edge-cases.md
+
+quality_gates:
+  - check: generated_tests_pass
+    command: "pytest tests/ai-generated/ -v"
+    blocking: true
+    note: "qa-agent must not commit tests that fail"
+
+evals:
+  # Run LLM eval harnesses to assess code quality beyond syntax
+  - name: hallucination_check
+    script: ai/evals/check-spec-compliance.py
+    args: ["--spec", "{spec_path}", "--diff", "{diff_path}"]
+    blocking: false   # advisory
+
+escalation:
+  condition: "spec is missing OR spec has no acceptance criteria"
+  action: "add label needs-spec, comment on PR, skip test generation"

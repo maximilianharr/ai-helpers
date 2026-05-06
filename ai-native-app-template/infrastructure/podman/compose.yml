@@ -1,0 +1,145 @@
+# Podman Compose — AI-Native App
+# All services. Environment variables come from .env (never commit actual .env).
+# Run: podman compose up -d
+# Dev override: podman compose -f compose.yml -f compose.dev.yml up
+
+name: ai-native-app
+
+networks:
+  app-net:
+    driver: bridge
+  monitoring-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
+  prometheus-data:
+  grafana-data:
+
+services:
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Backend — FastAPI
+  # ──────────────────────────────────────────────────────────────────────────
+  backend:
+    image: ${REGISTRY_URL}/app-backend:${IMAGE_TAG:-latest}
+    build:
+      context: ../../backend
+      dockerfile: Containerfile
+    restart: unless-stopped
+    networks: [app-net]
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      APP_VERSION: ${IMAGE_TAG:-local}
+      DATABASE_URL: postgresql+asyncpg://app:${DB_PASSWORD}@postgres:5432/app
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://yourdomain.com}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Frontend — nginx + SPA
+  # ──────────────────────────────────────────────────────────────────────────
+  frontend:
+    image: ${REGISTRY_URL}/app-frontend:${IMAGE_TAG:-latest}
+    build:
+      context: ../../frontend
+      dockerfile: Containerfile
+    restart: unless-stopped
+    networks: [app-net]
+    ports:
+      - "8080:8080"      # HTTP (put TLS termination in your reverse proxy / CDN)
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # PostgreSQL
+  # ──────────────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    networks: [app-net]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Redis — cache + session store
+  # ──────────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks: [app-net]
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Prometheus — metrics collection
+  # ──────────────────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    restart: unless-stopped
+    networks: [app-net, monitoring-net]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-lifecycle
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Grafana — dashboards
+  # ──────────────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.3.0
+    restart: unless-stopped
+    networks: [monitoring-net]
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana:/etc/grafana/provisioning:ro
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"

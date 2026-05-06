@@ -1,0 +1,77 @@
+# MCP Server Configuration
+# This file is read by AI agents to know which MCP servers are available.
+# Agents must use these servers for all external resource access — never hardcode paths/URLs.
+
+{
+  "mcpServers": {
+    "github": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm",
+        "-e", "GITHUB_PERSONAL_ACCESS_TOKEN",
+        "ghcr.io/github/github-mcp-server"
+      ],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+      },
+      "description": "GitHub repos, issues, PRs, code search",
+      "used_by": ["spec-agent", "dev-agent", "review-agent", "ops-agent", "changelog-agent"]
+    },
+
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem",
+        "/workspace"
+      ],
+      "description": "Read/write access to the repository workspace",
+      "used_by": ["dev-agent", "qa-agent", "ops-agent"],
+      "note": "Restricted to /workspace mount. No access to host system."
+    },
+
+    "postgres": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm",
+        "-e", "DATABASE_URL",
+        "mcp/postgres"
+      ],
+      "env": {
+        "DATABASE_URL": "${DATABASE_URL}"
+      },
+      "description": "Read-only SQL queries against application database (staging/prod)",
+      "used_by": ["ops-agent"],
+      "note": "READ ONLY. ops-agent may query but never mutate production data."
+    },
+
+    "prometheus": {
+      "command": "npx",
+      "args": ["-y", "mcp-prometheus",
+        "--url", "${PROMETHEUS_URL}"
+      ],
+      "env": {
+        "PROMETHEUS_URL": "${PROMETHEUS_URL}"
+      },
+      "description": "Query production metrics for incident response",
+      "used_by": ["ops-agent"]
+    },
+
+    "sequential-thinking": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "description": "Structured multi-step reasoning tool for complex decisions",
+      "used_by": ["spec-agent", "ops-agent"],
+      "note": "Use when confidence is low or when evaluating tradeoffs."
+    },
+
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "description": "Persistent key-value memory across agent sessions",
+      "used_by": ["dev-agent", "ops-agent"],
+      "note": "Store: build commands, discovered patterns, incident post-mortems."
+    }
+  },
+
+  "security": {
+    "note": "All MCP servers run in isolated containers. Tokens are injected via env vars from CI secrets — never committed to the repository.",
+    "audit_log": "Every MCP tool call is logged to the session store for traceability."
+  }
+}

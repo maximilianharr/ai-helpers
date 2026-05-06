@@ -1,0 +1,65 @@
+name: dev-agent
+description: Implements features from approved specs. Opens PRs with tests.
+version: "1.0"
+
+model:
+  primary: claude-sonnet-4.6
+  fallback: gpt-5.2
+  temperature: 0.2   # Low — we want predictable, not creative
+
+triggers:
+  - type: github_label
+    label: spec-approved
+    on: issue
+  - type: manual
+    script: scripts/run-agent.sh dev-agent
+
+inputs:
+  - source: github_issue
+    fields: [title, body, comments, labels]
+    via_mcp: github
+  - source: spec_file
+    # derived from issue body: "Implements: specs/features/<slug>.md"
+    via_mcp: filesystem
+    paths: ["specs/features/"]
+  - source: existing_code
+    via_mcp: filesystem
+    paths: ["backend/app/", "frontend/src/", ".github/copilot-instructions.md"]
+  - source: adrs
+    via_mcp: filesystem
+    paths: ["specs/adr/"]
+
+outputs:
+  - type: github_branch
+    name_pattern: "feature/{spec_slug}"
+  - type: github_pr
+    title_pattern: "feat({spec_slug}): {spec_title}"
+    body_template: ".github/PULL_REQUEST_TEMPLATE.md"
+    labels: ["ai-generated", "needs-review"]
+    links_issue: true
+  - type: github_comment
+    on: issue
+    message: "I've opened PR #{pr_number} implementing this spec. Review is running."
+
+prompt_template: ai/prompts/codegen/implement-feature.md
+
+quality_gates:
+  - check: backend_tests_pass
+    command: "cd backend && pytest tests/ -x -q"
+    blocking: true
+  - check: frontend_tests_pass
+    command: "cd frontend && npm run test -- --run"
+    blocking: true
+  - check: no_secrets_in_diff
+    command: "gitleaks detect --source=. --no-git"
+    blocking: true
+  - check: coverage_threshold
+    command: "cd backend && pytest --cov=app --cov-fail-under=80 tests/"
+    blocking: true
+
+escalation:
+  condition: "spec acceptance criterion is ambiguous OR architectural question arises"
+  action: "comment on GitHub issue with specific question, add label needs-clarification, stop"
+
+max_retries: 2
+retry_on: [test_failure, lint_error]

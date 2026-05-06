@@ -1,0 +1,66 @@
+name: ops-agent
+description: Monitors production health. Diagnoses incidents. Proposes fixes and runbook updates.
+version: "1.0"
+
+model:
+  primary: claude-sonnet-4.6
+  temperature: 0.1   # Very low — ops needs precision, not creativity
+
+triggers:
+  - type: webhook
+    source: alertmanager
+    endpoint: /webhooks/ops-agent
+  - type: schedule
+    cron: "0 6 * * *"   # nightly health summary at 06:00 UTC
+  - type: manual
+    script: scripts/run-agent.sh ops-agent
+
+inputs:
+  - source: prometheus_metrics
+    via_mcp: prometheus
+    queries:
+      - "rate(http_requests_total{status=~'5..'}[5m])"
+      - "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))"
+      - "up{job='app-backend'}"
+      - "process_resident_memory_bytes"
+  - source: application_logs
+    via_mcp: filesystem
+    paths: ["/var/log/app/"]
+    lines: 200
+  - source: recent_commits
+    via_mcp: github
+    last_hours: 24
+  - source: runbooks
+    via_mcp: filesystem
+    paths: ["docs/runbooks/"]
+  - source: database_health
+    via_mcp: postgres
+    query: "SELECT count(*) FROM pg_stat_activity WHERE state = 'active';"
+
+outputs:
+  - type: github_issue
+    title_pattern: "[INCIDENT] {alert_name} — {severity}"
+    labels: ["incident", "ops-agent"]
+    assign_to: on_call_schedule
+  - type: github_pr
+    condition: "runbook_update_needed"
+    title_pattern: "docs(runbook): update {runbook_name} after {incident_id}"
+  - type: webhook_notification
+    url: "${SLACK_WEBHOOK_URL}"
+    condition: "severity == 'critical'"
+
+prompt_template: ai/prompts/ops/incident-response.md
+
+escalation:
+  condition: "confidence < medium OR 3 reasoning steps exhausted"
+  action: "page on-call human via PagerDuty, attach full context dump to GitHub issue"
+  pagerduty_key: "${PAGERDUTY_INTEGRATION_KEY}"
+
+nightly_health_check:
+  report_to: github_issue
+  label: "health-report"
+  checks:
+    - error_rate_above: 0.01    # 1%
+    - p99_latency_above_ms: 500
+    - disk_usage_above_pct: 80
+    - failed_jobs_in_last_24h: true

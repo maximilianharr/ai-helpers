@@ -1,0 +1,46 @@
+groups:
+  - name: app-alerts
+    rules:
+      # ── Availability ──────────────────────────────────────────────────────
+      - alert: BackendDown
+        expr: up{job="app-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backend is down"
+          runbook: "docs/runbooks/backend-down.md"
+
+      # ── Error Rate ────────────────────────────────────────────────────────
+      - alert: HighErrorRate
+        expr: |
+          rate(http_requests_total{status=~"5.."}[5m])
+          / rate(http_requests_total[5m]) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Error rate > 5% for 2 minutes"
+          runbook: "docs/runbooks/high-error-rate.md"
+          # ops-agent reads this annotation to know which runbook to load
+
+      # ── Latency ───────────────────────────────────────────────────────────
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.99,
+            rate(http_request_duration_seconds_bucket[5m])
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p99 latency > 500ms"
+
+      # ── Memory ────────────────────────────────────────────────────────────
+      - alert: HighMemoryUsage
+        expr: process_resident_memory_bytes{job="app-backend"} > 400e6
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Backend memory > 400MB"
